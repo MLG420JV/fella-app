@@ -3,6 +3,7 @@ preview -> snapshot -> execute -> verify. The AI picks recipes; it never
 invents raw commands. This is what keeps Fella safe for beginners.
 """
 
+import re
 import subprocess
 from pathlib import Path
 import yaml
@@ -35,6 +36,10 @@ def recipe_hint(recipes: dict[str, Recipe]) -> str:
 
 
 def _run(cmd: str) -> tuple[int, str]:
+    # Recipes are authored with `sudo` for readability, but run via `pkexec`
+    # so the password prompt is a real KDE dialog in front of Fella instead
+    # of going to whatever terminal's stdin happens to be behind the window.
+    cmd = re.sub(r"\bsudo\b", "pkexec", cmd)
     p = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     return p.returncode, (p.stdout + p.stderr).strip()
 
