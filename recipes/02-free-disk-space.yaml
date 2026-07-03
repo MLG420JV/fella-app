@@ -1,0 +1,11 @@
+id: free_disk_space
+title: Free up disk space (clean package cache)
+explain: >
+  Your drive is getting full. A lot of that is old downloaded package files
+  you don't need anymore. I can clear the cache to get space back safely.
+needs_root: true
+commands:
+  - sudo paccache -rk1
+  - flatpak uninstall --unused -y
+verify: "true"
+undo: ""

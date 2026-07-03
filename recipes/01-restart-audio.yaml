@@ -1,0 +1,10 @@
+id: restart_audio
+title: Fix sound (restart the audio system)
+explain: >
+  Your sound stopped working. This usually means the audio service got stuck.
+  I can restart it - it takes a second and won't affect anything else.
+needs_root: false
+commands:
+  - systemctl --user restart pipewire pipewire-pulse wireplumber
+verify: systemctl --user is-active pipewire
+undo: ""

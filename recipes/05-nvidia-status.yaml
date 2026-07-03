@@ -1,0 +1,10 @@
+id: nvidia_status
+title: Check the graphics driver
+explain: >
+  Let me check your NVIDIA driver is loaded and healthy - useful if games look
+  wrong or the screen acts up. This only looks, it changes nothing.
+needs_root: false
+commands:
+  - nvidia-smi
+verify: "true"
+undo: ""

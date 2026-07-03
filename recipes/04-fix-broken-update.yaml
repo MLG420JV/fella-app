@@ -1,0 +1,11 @@
+id: fix_broken_update
+title: Fix a stuck update (clear the lock)
+explain: >
+  An update got interrupted and left a lock file, so now updates won't start.
+  I can clear that lock and finish the update. I'll make a restore point first.
+needs_root: true
+commands:
+  - "test -f /var/lib/pacman/db.lck && sudo rm /var/lib/pacman/db.lck || true"
+  - sudo pacman -Syu --noconfirm
+verify: "true"
+undo: ""

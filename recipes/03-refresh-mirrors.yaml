@@ -1,0 +1,10 @@
+id: refresh_mirrors
+title: Fix slow or failing updates (refresh mirrors)
+explain: >
+  Updates are failing or crawling. That's usually a bad download mirror.
+  On Garuda I can refresh the mirror list to the fastest working ones.
+needs_root: true
+commands:
+  - sudo pacman-mirrors --fasttrack && sudo pacman -Syy
+verify: "true"
+undo: ""
