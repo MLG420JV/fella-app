@@ -41,6 +41,21 @@ Linux / KDE Plasma) since its recipes and system prompt use `pacman`.
    A face icon will appear in your system tray. Click it to open the chat
    window.
 
+## Installing apps
+
+You can also ask Fella to install a known app, e.g. "install steam" or
+"can you set up discord". Fella only installs from a fixed catalog in
+`fella/apps.py` — it never runs a package manager with raw text you typed,
+so there's no way to slip in an arbitrary package name. An install goes
+through the same preview → snapshot → execute → verify flow as repair
+recipes, with a confirm button.
+
+Currently cataloged: Steam, Discord, Spotify, VS Code, GIMP, Blender,
+OBS Studio, VLC, Telegram, Lutris, Heroic Games Launcher, Timeshift,
+Chromium, Firefox, Slack. Spotify, Heroic, and Slack come from
+`chaotic-aur`, so that repo needs to be enabled (it is by default on
+Garuda).
+
 ## Notes
 
 - Fella's memory (your name, chat log) is stored locally at
@@ -51,4 +66,5 @@ Linux / KDE Plasma) since its recipes and system prompt use `pacman`.
   snapshot (via `snapper`, if installed) → run → verify, and nothing runs
   without you clicking the action button in chat.
 - The AI never invents raw shell commands — it can only reference recipes
-  by id; the actual commands are fixed in the YAML files.
+  or cataloged app installs by id; the actual commands are fixed in code
+  or YAML, never built from what you typed.

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import brain, memory, hardware
+from .apps import APPS, catalog_hint, install_recipe, match_app
 from .face import face_svg
 from .recipes import load_recipes, recipe_hint, run_recipe
 
@@ -147,7 +148,8 @@ class ChatWindow(QWidget):
         self.history.append({"role": "user", "content": text})
         hw = hardware.summary_for_model()
         msgs = [{'role': 'system', 'content': hw}] + self.history[-12:]
-        self.worker = ChatWorker(self.model, msgs, recipe_hint(self.recipes))
+        hint = recipe_hint(self.recipes) + "\n" + catalog_hint()
+        self.worker = ChatWorker(self.model, msgs, hint)
         self._buf = ""
         self._append("Fella", "")
         self._stream_anchor = self.log.textCursor().position()
@@ -169,12 +171,19 @@ class ChatWindow(QWidget):
         m = RECIPE_RE.search(full)
         if m and m.group(1) in self.recipes:
             self._offer_recipe(self.recipes[m.group(1)])
+        elif m and m.group(1).startswith("install_") and m.group(1)[len("install_"):] in APPS:
+            self._offer_recipe(install_recipe(m.group(1)[len("install_"):]))
         else:
             last_user = next((msg["content"] for msg in reversed(self.history)
                               if msg["role"] == "user"), "")
             rec = match_recipe(last_user, self.recipes)
             if rec:
                 self._offer_recipe(rec)
+                return
+            app = match_app(last_user)
+            if app:
+                key, _info = app
+                self._offer_recipe(install_recipe(key))
 
     def _offer_recipe(self, recipe):
         # clear old buttons
