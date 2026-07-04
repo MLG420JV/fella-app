@@ -233,9 +233,10 @@ class HistoryWindow(QWidget):
 
 
 class ChatWindow(QWidget):
-    def __init__(self, model, recipes):
+    def __init__(self, model, recipes, tray=None):
         super().__init__()
         self.model, self.recipes = model, recipes
+        self.tray = tray
         self.history = memory.recent()
         self._history_win = None
         self._settings_win = None
@@ -324,6 +325,8 @@ class ChatWindow(QWidget):
         dlg = SettingsDialog(self)
         if dlg.exec():
             self._set_mood("idle")
+            if self.tray is not None:
+                self.tray.setIcon(svg_icon("idle" if brain.is_up() else "sleeping"))
 
     def send(self):
         text = self.entry.text().strip()
@@ -464,7 +467,7 @@ class FellaTray:
                 "1) sudo systemctl enable --now ollama\n"
                 "2) ollama pull qwen2.5:7b-instruct")
             return
-        self.win = ChatWindow(self.model, self.recipes)
+        self.win = ChatWindow(self.model, self.recipes, tray=self.tray)
         self.win.show()
 
     def open_memory(self):
