@@ -83,8 +83,13 @@ class ChatWorker(QThread):
                 full += c
                 self.chunk.emit(c)
         except Exception as e:
-            full = f"(I couldn't reach my brain: {e})"
-            self.chunk.emit(full)
+            # Append rather than overwrite, so a mid-stream drop doesn't lose
+            # whatever had already streamed in - the chunk signal only ever
+            # appends, and `full` (used for memory/history) must match what
+            # actually ends up on screen.
+            note = f"\n\n(Lost my connection partway through: {e})" if full else f"(I couldn't reach my brain: {e})"
+            full += note
+            self.chunk.emit(note)
         self.done.emit(full)
 
 
@@ -239,7 +244,6 @@ class ChatWindow(QWidget):
         self.tray = tray
         self.history = memory.recent()
         self._history_win = None
-        self._settings_win = None
 
         self.setWindowTitle("Fella")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
@@ -295,10 +299,10 @@ class ChatWindow(QWidget):
             "background: rgba(255,255,255,230); border-radius: 10px; padding: 7px 10px; font-size: 13px;"
         )
         self.entry.returnPressed.connect(self.send)
-        send_btn = QPushButton("Send")
-        send_btn.clicked.connect(self.send)
+        self.send_btn = QPushButton("Send")
+        self.send_btn.clicked.connect(self.send)
         entry_row.addWidget(self.entry, 1)
-        entry_row.addWidget(send_btn)
+        entry_row.addWidget(self.send_btn)
         entry_col.addLayout(entry_row)
         mid.addLayout(entry_col, 1)
         outer.addLayout(mid)
@@ -318,8 +322,16 @@ class ChatWindow(QWidget):
         self.adjustSize()
 
     def _open_history(self):
+        if self._history_win is not None and self._history_win.isVisible():
+            self._history_win.raise_()
+            self._history_win.activateWindow()
+            return
         self._history_win = HistoryWindow(memory.recent(limit=200))
         self._history_win.show()
+
+    def _set_busy(self, busy: bool):
+        self.entry.setEnabled(not busy)
+        self.send_btn.setEnabled(not busy)
 
     def _open_settings(self):
         dlg = SettingsDialog(self)
@@ -352,6 +364,7 @@ class ChatWindow(QWidget):
         self._buf = ""
         self._set_mood("thinking")
         self._say("...")
+        self._set_busy(True)
         self.worker.chunk.connect(self._on_chunk)
         self.worker.done.connect(self._on_done)
         self.worker.start()
@@ -362,6 +375,7 @@ class ChatWindow(QWidget):
         self._say(RECIPE_RE.sub("", self._buf))
 
     def _on_done(self, full):
+        self._set_busy(False)
         clean = RECIPE_RE.sub("", full).strip()
         self._say(clean)
         memory.log("assistant", clean)
@@ -420,10 +434,12 @@ class ChatWindow(QWidget):
     def _run(self, recipe):
         self._clear_actions()
         self._set_mood("thinking")
+        self._set_busy(True)
         self._say(f"Okay, working on: {recipe.title}")
         for line in run_recipe(recipe):
             self._say(line)
             QApplication.processEvents()
+        self._set_busy(False)
         self._react_happy()
 
 
@@ -433,6 +449,7 @@ class FellaTray:
         self.recipes = load_recipes()
         models = brain.list_models()
         self.model = models[0] if models else None
+        self.win = None
 
         self.tray = QSystemTrayIcon(svg_icon("idle" if brain.is_up() else "sleeping"))
         self.tray.setToolTip("Fella")
@@ -466,6 +483,10 @@ class FellaTray:
                 "I need my brain running first.\n\n"
                 "1) sudo systemctl enable --now ollama\n"
                 "2) ollama pull qwen2.5:7b-instruct")
+            return
+        if self.win is not None and self.win.isVisible():
+            self.win.raise_()
+            self.win.activateWindow()
             return
         self.win = ChatWindow(self.model, self.recipes, tray=self.tray)
         self.win.show()

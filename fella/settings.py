@@ -24,7 +24,10 @@ def load() -> dict:
 
 
 def save(data: dict):
-    SETTINGS_FILE.write_text(json.dumps(data, indent=2))
+    try:
+        SETTINGS_FILE.write_text(json.dumps(data, indent=2))
+    except OSError:
+        pass
 
 
 def get_colors() -> tuple[str, str]:

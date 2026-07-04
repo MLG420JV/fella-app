@@ -35,12 +35,20 @@ def recipe_hint(recipes: dict[str, Recipe]) -> str:
     return "\n".join(f"- {r.id}: {r.title}" for r in recipes.values())
 
 
+# Generous enough for a real package download, but stops a hung command
+# (e.g. a network stall) from freezing the UI forever.
+COMMAND_TIMEOUT = 900
+
+
 def _run(cmd: str) -> tuple[int, str]:
     # Recipes are authored with `sudo` for readability, but run via `pkexec`
     # so the password prompt is a real KDE dialog in front of Fella instead
     # of going to whatever terminal's stdin happens to be behind the window.
     cmd = re.sub(r"\bsudo\b", "pkexec", cmd)
-    p = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    try:
+        p = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return 1, f"Timed out after {COMMAND_TIMEOUT}s - it was taking too long, so I stopped waiting."
     return p.returncode, (p.stdout + p.stderr).strip()
 
 

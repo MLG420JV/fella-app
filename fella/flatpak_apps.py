@@ -18,6 +18,11 @@ from .recipes import Recipe
 
 _INTENT_RE = re.compile(r"\b(?:install|get me|download|set up|setup)\b\s+(?:the\s+)?(.+)", re.I)
 _TRAILING_RE = re.compile(r"\s+(?:for me|please|now)\s*$", re.I)
+# Flatpak app IDs are reverse-DNS style (org.kde.krita). Commands are built
+# by interpolating the id into a shell string, so only ever accept ids that
+# actually look like one - defense in depth in case a remote's metadata is
+# ever malformed or compromised.
+_APP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)+$")
 
 
 def available() -> bool:
@@ -46,7 +51,10 @@ def search(query: str, limit: int = 1) -> list[tuple[str, str]]:
         results = json.loads(p.stdout or "[]")
     except (subprocess.SubprocessError, ValueError, OSError):
         return []
-    return [(r["application_id"], r["name"]) for r in results[:limit] if r.get("application_id")]
+    return [
+        (r["application_id"], r["name"]) for r in results[:limit]
+        if _APP_ID_RE.match(r.get("application_id", ""))
+    ]
 
 
 def install_recipe(app_id: str, title: str) -> Recipe:
