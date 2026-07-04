@@ -4,26 +4,30 @@ Sits in your KDE system tray showing Fella's face. Click to chat.
 Detects problems you describe, offers a recipe, and only acts with your OK.
 """
 
+import os
 import re
 import sys
-import tempfile
-from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QByteArray
-from PySide6.QtGui import QIcon, QPixmap, QAction, QTextCursor
+# Qt's native "wayland" platform plugin doesn't reliably show the system
+# tray icon (StatusNotifierItem support is spottier there); "xcb" (via
+# XWayland) does. Set a default but let an explicit user override win.
+os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+
+from PySide6.QtCore import Qt, QThread, Signal, QByteArray, QTimer
+from PySide6.QtGui import QIcon, QPixmap, QAction, QPainter, QColor
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QApplication, QSystemTrayIcon, QMenu, QWidget, QVBoxLayout, QHBoxLayout,
-    QTextEdit, QLineEdit, QPushButton, QLabel, QMessageBox,
+    QScrollArea, QLineEdit, QPushButton, QLabel, QMessageBox, QDialog,
+    QColorDialog,
 )
 
-from . import brain, memory, hardware
+from . import brain, memory, hardware, settings
+from . import flatpak_apps
 from .apps import APPS, catalog_hint, install_recipe, match_app
 from .face import face_svg
 from .recipes import load_recipes, recipe_hint, run_recipe
 
-ACCENT_BODY = "#A79FF0"
-ACCENT_EYE = "#26215C"
 RECIPE_RE = re.compile(r"\[RECIPE:\s*([a-z_]+)\]")
 
 # Map everyday words to a recipe id, so Fella acts on what you ASK for.
@@ -44,17 +48,24 @@ def match_recipe(text, recipes):
     return None
 
 
-
-def svg_icon(mood: str) -> QIcon:
-    svg = face_svg(mood, ACCENT_BODY, ACCENT_EYE).encode()
+def render_face(mood: str, body: str, eye: str, size: int = 96) -> QPixmap:
+    svg = face_svg(mood, body, eye).encode()
     renderer = QSvgRenderer(QByteArray(svg))
-    pm = QPixmap(64, 64)
-    pm.fill(Qt.transparent)
-    from PySide6.QtGui import QPainter
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
     renderer.render(p)
     p.end()
-    return QIcon(pm)
+    return pm
+
+
+def face_pixmap(mood: str, size: int = 96) -> QPixmap:
+    body, eye = settings.get_colors()
+    return render_face(mood, body, eye, size)
+
+
+def svg_icon(mood: str) -> QIcon:
+    return QIcon(face_pixmap(mood, 64))
 
 
 class ChatWorker(QThread):
@@ -77,67 +88,252 @@ class ChatWorker(QThread):
         self.done.emit(full)
 
 
+BUBBLE_FELLA = "background:#EDEBFB; color:#26215C; border-radius:14px; padding:9px 13px; font-size:14px;"
+BUBBLE_USER = "background:#A79FF0; color:white; border-radius:14px; padding:9px 13px; font-size:14px;"
+BUBBLE_MONO = "background:#EDEBFB; color:#26215C; border-radius:14px; padding:9px 13px; font-family:monospace; font-size:12px;"
+ICON_BTN_STYLE = (
+    "QPushButton { background: rgba(255,255,255,170); border: none; border-radius: 12px; font-size: 13px; }"
+    "QPushButton:hover { background: rgba(255,255,255,230); }"
+)
+
+# How long a "happy" reaction lingers before Fella settles back to idle.
+REACTION_MS = 1800
+
+
+def make_bubble(text: str, who: str, mono: bool = False) -> QLabel:
+    bubble = QLabel(text)
+    bubble.setWordWrap(True)
+    bubble.setMaximumWidth(320)
+    bubble.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    bubble.setStyleSheet(BUBBLE_MONO if mono else (BUBBLE_FELLA if who == "Fella" else BUBBLE_USER))
+    return bubble
+
+
+def bubble_row(bubble: QLabel, who: str) -> QHBoxLayout:
+    row = QHBoxLayout()
+    if who == "Fella":
+        row.addWidget(bubble)
+        row.addStretch()
+    else:
+        row.addStretch()
+        row.addWidget(bubble)
+    return row
+
+
+class AvatarLabel(QLabel):
+    """The avatar image, draggable so you can reposition the floating window."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            # startSystemMove() hands the drag off to the compositor, which
+            # works on both X11 and Wayland - a plain window.move() in
+            # mouseMoveEvent only works on X11 and is a silent no-op on
+            # Wayland, where clients can't reposition their own windows.
+            handle = self.window().windowHandle()
+            if handle is not None:
+                handle.startSystemMove()
+            event.accept()
+
+
+class SettingsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Fella Settings")
+        self.body, self.eye = settings.get_colors()
+
+        layout = QVBoxLayout(self)
+
+        self.preview = QLabel()
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.preview)
+        self._refresh_preview()
+
+        body_row = QHBoxLayout()
+        body_row.addWidget(QLabel("Body color:"))
+        self.body_btn = QPushButton()
+        self.body_btn.setFixedWidth(60)
+        self.body_btn.clicked.connect(self._pick_body)
+        body_row.addWidget(self.body_btn)
+        layout.addLayout(body_row)
+
+        eye_row = QHBoxLayout()
+        eye_row.addWidget(QLabel("Eye color:"))
+        self.eye_btn = QPushButton()
+        self.eye_btn.setFixedWidth(60)
+        self.eye_btn.clicked.connect(self._pick_eye)
+        eye_row.addWidget(self.eye_btn)
+        layout.addLayout(eye_row)
+
+        self._refresh_buttons()
+
+        btn_row = QHBoxLayout()
+        reset_btn = QPushButton("Reset to default")
+        reset_btn.clicked.connect(self._reset)
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self._save)
+        btn_row.addWidget(reset_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(save_btn)
+        layout.addLayout(btn_row)
+
+    def _refresh_preview(self):
+        self.preview.setPixmap(render_face("idle", self.body, self.eye, 96))
+
+    def _refresh_buttons(self):
+        self.body_btn.setStyleSheet(f"background:{self.body}; border-radius:6px;")
+        self.eye_btn.setStyleSheet(f"background:{self.eye}; border-radius:6px;")
+
+    def _pick_body(self):
+        color = QColorDialog.getColor(QColor(self.body), self, "Choose a body color")
+        if color.isValid():
+            self.body = color.name()
+            self._refresh_buttons()
+            self._refresh_preview()
+
+    def _pick_eye(self):
+        color = QColorDialog.getColor(QColor(self.eye), self, "Choose an eye color")
+        if color.isValid():
+            self.eye = color.name()
+            self._refresh_buttons()
+            self._refresh_preview()
+
+    def _reset(self):
+        self.body, self.eye = settings.DEFAULT_BODY, settings.DEFAULT_EYE
+        self._refresh_buttons()
+        self._refresh_preview()
+
+    def _save(self):
+        settings.set_colors(self.body, self.eye)
+        self.accept()
+
+
+class HistoryWindow(QWidget):
+    def __init__(self, history: list[dict]):
+        super().__init__()
+        self.setWindowTitle("Fella — History")
+        self.resize(420, 560)
+        layout = QVBoxLayout(self)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        host = QWidget()
+        vbox = QVBoxLayout(host)
+        for msg in history:
+            who = "Fella" if msg["role"] == "assistant" else "You"
+            vbox.addLayout(bubble_row(make_bubble(msg["content"], who), who))
+        vbox.addStretch()
+        scroll.setWidget(host)
+        layout.addWidget(scroll)
+
+        QTimer.singleShot(0, lambda: scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum()))
+
+
 class ChatWindow(QWidget):
     def __init__(self, model, recipes):
         super().__init__()
         self.model, self.recipes = model, recipes
         self.history = memory.recent()
-        self.pending_recipe = None
+        self._history_win = None
+        self._settings_win = None
 
         self.setWindowTitle("Fella")
-        self.resize(440, 560)
-        layout = QVBoxLayout(self)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
-        name = memory.get_name()
-        hello = f"Hi {name}! What's up?" if name else "Hi! I'm Fella. What should I call you?"
-        header = QLabel("🔒 Running locally · 0 bytes sent")
-        header.setStyleSheet("color: gray; font-size: 11px;")
-        layout.addWidget(header)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 10, 14, 14)
 
-        self.log = QTextEdit(readOnly=True)
-        self.log.setStyleSheet("font-size: 14px;")
-        layout.addWidget(self.log, 1)
-        self._append("Fella", hello)
+        toolbar = QHBoxLayout()
+        toolbar.addStretch()
+        hist_btn = QPushButton("🕘")
+        hist_btn.setToolTip("View chat history")
+        hist_btn.clicked.connect(self._open_history)
+        settings_btn = QPushButton("⚙")
+        settings_btn.setToolTip("Settings")
+        settings_btn.clicked.connect(self._open_settings)
+        close_btn = QPushButton("✕")
+        close_btn.setToolTip("Close")
+        close_btn.clicked.connect(self.close)
+        for b in (hist_btn, settings_btn, close_btn):
+            b.setFixedSize(26, 26)
+            b.setStyleSheet(ICON_BTN_STYLE)
+            toolbar.addWidget(b)
+        outer.addLayout(toolbar)
 
-        row = QHBoxLayout()
+        self.bubble_label = QLabel()
+        self.bubble_label.setWordWrap(True)
+        self.bubble_label.setMaximumWidth(320)
+        self.bubble_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.bubble_label.hide()
+        bubble_wrap = QHBoxLayout()
+        bubble_wrap.addStretch()
+        bubble_wrap.addWidget(self.bubble_label)
+        bubble_wrap.addStretch()
+        outer.addLayout(bubble_wrap)
+
+        mid = QHBoxLayout()
+        avatar_col = QVBoxLayout()
+        self.avatar = AvatarLabel()
+        self.avatar.setFixedSize(96, 96)
+        self.avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        avatar_col.addWidget(self.avatar)
+        self.action_row = QHBoxLayout()
+        avatar_col.addLayout(self.action_row)
+        mid.addLayout(avatar_col)
+
+        entry_col = QVBoxLayout()
+        entry_col.addStretch()
+        entry_row = QHBoxLayout()
         self.entry = QLineEdit()
         self.entry.setPlaceholderText("Tell me what's going on...")
+        self.entry.setStyleSheet(
+            "background: rgba(255,255,255,230); border-radius: 10px; padding: 7px 10px; font-size: 13px;"
+        )
         self.entry.returnPressed.connect(self.send)
         send_btn = QPushButton("Send")
         send_btn.clicked.connect(self.send)
-        row.addWidget(self.entry, 1)
-        row.addWidget(send_btn)
-        layout.addLayout(row)
+        entry_row.addWidget(self.entry, 1)
+        entry_row.addWidget(send_btn)
+        entry_col.addLayout(entry_row)
+        mid.addLayout(entry_col, 1)
+        outer.addLayout(mid)
 
-        self.action_row = QHBoxLayout()
-        layout.addLayout(self.action_row)
+        self._set_mood("idle")
+        name = memory.get_name()
+        hello = f"Hi {name}! What's up?" if name else "Hi! I'm Fella. What should I call you?"
+        self._say(hello)
 
-    def _append(self, who: str, text: str):
-        color = "#7F77DD" if who == "Fella" else "#333"
-        self.log.append(f'<b style="color:{color}">{who}:</b> {text}')
-        self.log.moveCursor(QTextCursor.MoveOperation.End)
+    def _set_mood(self, mood: str):
+        self.avatar.setPixmap(face_pixmap(mood, 88))
 
-    def _set_stream_text(self, text: str):
-        cursor = self.log.textCursor()
-        cursor.setPosition(self._stream_anchor)
-        cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
-        cursor.removeSelectedText()
-        cursor.insertText(text)
-        self.log.setTextCursor(cursor)
-        self.log.ensureCursorVisible()
+    def _say(self, text: str, mono: bool = False):
+        self.bubble_label.setStyleSheet(BUBBLE_MONO if mono else BUBBLE_FELLA)
+        self.bubble_label.setText(text)
+        self.bubble_label.show()
+        self.adjustSize()
+
+    def _open_history(self):
+        self._history_win = HistoryWindow(memory.recent(limit=200))
+        self._history_win.show()
+
+    def _open_settings(self):
+        dlg = SettingsDialog(self)
+        if dlg.exec():
+            self._set_mood("idle")
 
     def send(self):
         text = self.entry.text().strip()
         if not text:
             return
         if text.lower() in ("specs", "my specs", "what pc do i have", "my pc"):
-            self._append("You", text)
-            self._append("Fella", "Here's what I can see on your machine:")
-            self._append("Fella", "<pre>" + hardware.full_report() + "</pre>")
             self.entry.clear()
+            self._say(hardware.full_report(), mono=True)
             return
         self.entry.clear()
-        self._append("You", text)
         memory.log("user", text)
 
         # naive name capture: "my name is X" / "call me X"
@@ -151,8 +347,8 @@ class ChatWindow(QWidget):
         hint = recipe_hint(self.recipes) + "\n" + catalog_hint()
         self.worker = ChatWorker(self.model, msgs, hint)
         self._buf = ""
-        self._append("Fella", "")
-        self._stream_anchor = self.log.textCursor().position()
+        self._set_mood("thinking")
+        self._say("...")
         self.worker.chunk.connect(self._on_chunk)
         self.worker.done.connect(self._on_done)
         self.worker.start()
@@ -160,33 +356,50 @@ class ChatWindow(QWidget):
     def _on_chunk(self, c):
         self._buf += c
         # Strip the recipe tag from view as it streams in so it never flashes on screen.
-        self._set_stream_text(RECIPE_RE.sub("", self._buf))
+        self._say(RECIPE_RE.sub("", self._buf))
 
     def _on_done(self, full):
         clean = RECIPE_RE.sub("", full).strip()
-        self._set_stream_text(clean)
+        self._say(clean)
         memory.log("assistant", clean)
         self.history.append({"role": "assistant", "content": full})
 
         m = RECIPE_RE.search(full)
         if m and m.group(1) in self.recipes:
             self._offer_recipe(self.recipes[m.group(1)])
-        elif m and m.group(1).startswith("install_") and m.group(1)[len("install_"):] in APPS:
+            return
+        if m and m.group(1).startswith("install_") and m.group(1)[len("install_"):] in APPS:
             self._offer_recipe(install_recipe(m.group(1)[len("install_"):]))
-        else:
-            last_user = next((msg["content"] for msg in reversed(self.history)
-                              if msg["role"] == "user"), "")
-            rec = match_recipe(last_user, self.recipes)
-            if rec:
-                self._offer_recipe(rec)
-                return
-            app = match_app(last_user)
-            if app:
-                key, _info = app
-                self._offer_recipe(install_recipe(key))
+            return
+
+        last_user = next((msg["content"] for msg in reversed(self.history)
+                          if msg["role"] == "user"), "")
+        rec = match_recipe(last_user, self.recipes)
+        if rec:
+            self._offer_recipe(rec)
+            return
+        app = match_app(last_user)
+        if app:
+            key, _info = app
+            self._offer_recipe(install_recipe(key))
+            return
+        if flatpak_apps.available():
+            query = flatpak_apps.extract_query(last_user)
+            if query:
+                matches = flatpak_apps.search(query)
+                if matches:
+                    app_id, name = matches[0]
+                    self._offer_recipe(flatpak_apps.install_recipe(app_id, name))
+                    return
+
+        self._react_happy()
+
+    def _react_happy(self):
+        self._set_mood("happy")
+        QTimer.singleShot(REACTION_MS, lambda: self._set_mood("idle"))
 
     def _offer_recipe(self, recipe):
-        # clear old buttons
+        self._set_mood("asking")
         while self.action_row.count():
             self.action_row.takeAt(0).widget().deleteLater()
         fix = QPushButton(f"✅ {recipe.title}")
@@ -199,13 +412,16 @@ class ChatWindow(QWidget):
     def _clear_actions(self):
         while self.action_row.count():
             self.action_row.takeAt(0).widget().deleteLater()
+        self._set_mood("idle")
 
     def _run(self, recipe):
         self._clear_actions()
-        self._append("Fella", f"Okay, working on: {recipe.title}")
+        self._set_mood("thinking")
+        self._say(f"Okay, working on: {recipe.title}")
         for line in run_recipe(recipe):
-            self._append("Fella", line)
+            self._say(line)
             QApplication.processEvents()
+        self._react_happy()
 
 
 class FellaTray:
@@ -263,7 +479,9 @@ def main():
     if not QSystemTrayIcon.isSystemTrayAvailable():
         print("No system tray available.")
         return 1
-    FellaTray(app)
+    # Keep a reference - an unassigned FellaTray gets garbage collected almost
+    # immediately, silently tearing down the tray icon right after it appears.
+    tray = FellaTray(app)
     return app.exec()
 
 

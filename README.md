@@ -56,6 +56,21 @@ Chromium, Firefox, Slack. Spotify, Heroic, and Slack come from
 `chaotic-aur`, so that repo needs to be enabled (it is by default on
 Garuda).
 
+If you ask for something outside that catalog, Fella falls back to
+searching Flathub — the same app store behind KDE Discover — and offers
+the closest match through `flatpak install`, still gated by the same
+confirm button. Requires `flatpak` with the `flathub` remote configured
+(`flatpak remote-add flathub https://flathub.org/repo/flathub.flatpakrepo`
+if it isn't already — Garuda ships this by default).
+
+## The chat window
+
+Fella shows its face at the top of the chat window and reacts as you talk:
+idle by default, thinking while it's generating a reply, asking when it's
+offering you a recipe/install button, and a brief happy reaction once a
+reply lands with nothing to confirm. Messages render as chat bubbles
+(yours on the right, Fella's on the left).
+
 ## Notes
 
 - Fella's memory (your name, chat log) is stored locally at
